@@ -15,7 +15,14 @@ use ratatui::{
 use serde_json::Value;
 use std::io;
 use std::process::Command;
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::thread;
 use std::time::{Duration, Instant};
+
+enum AppState {
+    Normal,
+    Thinking,
+}
 
 // Update the FeedbackMessage struct to include a type
 enum FeedbackType {
@@ -70,6 +77,9 @@ struct App {
     show_conversation_list: bool, // New field to control conversation list visibility
     chat_state: ChatState,
     feedback: Option<FeedbackMessage>,
+    state: AppState,
+    tx: Sender<String>,
+    rx: Receiver<String>,
 }
 
 struct ChatState {
@@ -86,6 +96,8 @@ impl ChatState {
 
 impl App {
     fn new() -> Self {
+        let (tx, rx) = channel();
+
         let conversations = load_conversations();
         let models = load_models();
         let app = App {
@@ -100,6 +112,9 @@ impl App {
             show_conversation_list: false,
             chat_state: ChatState::new(),
             feedback: None,
+            state: AppState::Normal,
+            tx,
+            rx,
         };
         app
     }
@@ -204,17 +219,32 @@ impl App {
                 content: prompt.clone(),
             });
 
-            let model_alias = &self.models[self.model_list_state.selected().unwrap_or(0)].alias;
-            let response = run_llm(&prompt, model_alias);
-            conversation.messages.push(Message {
-                role: "assistant".to_string(),
-                content: response,
-            });
-
             self.input.clear();
+            self.state = AppState::Thinking;
 
-            // Auto-scroll to the bottom after sending a message
-            self.scroll_to_bottom();
+            let tx = self.tx.clone();
+            let model_alias = self.models[self.model_list_state.selected().unwrap_or(0)]
+                .alias
+                .clone();
+
+            thread::spawn(move || {
+                let response = run_llm(&prompt, &model_alias);
+                tx.send(response).unwrap();
+            });
+        }
+    }
+
+    fn check_for_response(&mut self) {
+        if let Ok(response) = self.rx.try_recv() {
+            if let Some(index) = self.current_conversation_index {
+                let conversation = &mut self.conversations[index];
+                conversation.messages.push(Message {
+                    role: "assistant".to_string(),
+                    content: response,
+                });
+                self.state = AppState::Normal;
+                self.scroll_to_bottom();
+            }
         }
     }
 
@@ -352,6 +382,7 @@ fn main() -> Result<(), io::Error> {
 
     loop {
         app.update_feedback();
+        app.check_for_response();
         terminal.draw(|f| ui(f, &mut app))?;
 
         if event::poll(Duration::from_millis(100))? {
@@ -524,6 +555,8 @@ fn render_status(f: &mut Frame, app: &App, area: Rect) {
             FeedbackType::Negative => Color::Red,
         };
         Span::styled(&feedback.message, Style::default().fg(feedback_color))
+    } else if matches!(app.state, AppState::Thinking) {
+        Span::styled("Thinking...", Style::default().fg(Color::Yellow))
     } else {
         // When no feedback is present, show the normal status
         let status_text = match app.focused_block {
