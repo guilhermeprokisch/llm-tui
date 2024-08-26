@@ -145,8 +145,8 @@ fn main() -> Result<(), io::Error> {
             if let Event::Key(key) = event::read()? {
                 match app.focused_block {
                     FocusedBlock::ModelSelect => match key.code {
-                        KeyCode::Left => app.previous_model(),
-                        KeyCode::Right => app.next_model(),
+                        KeyCode::Up => app.previous_model(),
+                        KeyCode::Down => app.next_model(),
                         KeyCode::Tab => app.next_focus(),
                         KeyCode::Char('q') => break,
                         _ => {}
@@ -223,34 +223,27 @@ fn main() -> Result<(), io::Error> {
 }
 
 fn ui(f: &mut Frame, app: &mut App) {
-    let main_layout = Layout::default()
+    let chunks = Layout::default()
         .direction(Direction::Vertical)
+        .margin(1)
         .constraints(
             [
-                Constraint::Length(3),
-                Constraint::Min(0),
-                Constraint::Length(3),
+                Constraint::Length(3), // Model select
+                Constraint::Length(3), // Input
+                Constraint::Min(3),    // Output
+                Constraint::Length(3), // Status
             ]
             .as_ref(),
         )
         .split(f.size());
 
-    let (top_bar, content_area, status_bar) = (main_layout[0], main_layout[1], main_layout[2]);
+    let (model_chunk, input_chunk, output_chunk, status_chunk) =
+        (chunks[0], chunks[1], chunks[2], chunks[3]);
 
-    // Render top bar (model selection)
-    render_model_select(f, app, top_bar);
-
-    // Split content area into input and output
-    let content_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(30), Constraint::Percentage(70)].as_ref())
-        .split(content_area);
-
-    render_input(f, app, content_chunks[0]);
-    render_output(f, app, content_chunks[1]);
-
-    // Render status bar
-    render_status(f, app, status_bar);
+    render_model_select(f, app, model_chunk);
+    render_input(f, app, input_chunk);
+    render_output(f, app, output_chunk);
+    render_status(f, app, status_chunk);
 
     if app.is_thinking {
         render_spinner(f, app);
@@ -291,6 +284,7 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 
 fn render_model_select(f: &mut Frame, app: &App, area: Rect) {
     let model_block = Block::default()
+        .title("Model")
         .borders(Borders::ALL)
         .border_style(
             Style::default().fg(if let FocusedBlock::ModelSelect = app.focused_block {
@@ -301,10 +295,8 @@ fn render_model_select(f: &mut Frame, app: &App, area: Rect) {
         );
 
     let current_model = app.selected_model();
-    let model_text = format!("Model: {} (←/→ to change)", current_model);
-    let model_widget = Paragraph::new(model_text)
-        .block(model_block)
-        .alignment(ratatui::layout::Alignment::Center);
+    let model_text = format!("Selected: {}", current_model);
+    let model_widget = Paragraph::new(model_text).block(model_block);
 
     f.render_widget(model_widget, area);
 }
@@ -326,11 +318,11 @@ fn render_input(f: &mut Frame, app: &App, area: Rect) {
         .style(match app.input_mode {
             InputMode::Normal => Style::default(),
             InputMode::Editing => Style::default().fg(Color::Yellow),
-        })
-        .wrap(ratatui::widgets::Wrap { trim: true });
+        });
 
     f.render_widget(input, area);
 
+    // Draw the cursor
     if let FocusedBlock::Input = app.focused_block {
         if let InputMode::Editing = app.input_mode {
             f.set_cursor(area.x + app.input_cursor as u16 + 1, area.y + 1);
@@ -359,18 +351,17 @@ fn render_output(f: &mut Frame, app: &App, area: Rect) {
 
 fn render_status(f: &mut Frame, app: &App, area: Rect) {
     let status = match app.focused_block {
-        FocusedBlock::ModelSelect => "←/→: Select model  |  Tab: Switch focus",
+        FocusedBlock::ModelSelect => "Use ↑↓ to select model, Tab to switch focus",
         FocusedBlock::Input => match app.input_mode {
-            InputMode::Normal => "i: Start typing  |  Enter: Send  |  Tab: Switch focus",
-            InputMode::Editing => "Esc: Stop editing  |  Enter: Send",
+            InputMode::Normal => "Press 'i' to insert, Enter to send, Tab to switch focus",
+            InputMode::Editing => "Editing: Enter to send, Esc to cancel",
         },
-        FocusedBlock::Output => "Tab: Switch focus",
+        FocusedBlock::Output => "Tab to switch focus",
     };
 
     let status_widget = Paragraph::new(status)
         .block(Block::default().borders(Borders::ALL))
-        .style(Style::default().fg(Color::Cyan))
-        .alignment(ratatui::layout::Alignment::Center);
+        .style(Style::default().fg(Color::Cyan));
 
     f.render_widget(status_widget, area);
 }
