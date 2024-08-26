@@ -5,16 +5,16 @@ use crossterm::{
 };
 use ratatui::{
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout, Margin, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
-    text::Text,
+    text::{Line, Span, Text},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
     Frame, Terminal,
 };
 use serde_json::Value;
-use std::io;
 use std::process::Command;
-use std::time::Duration;
+use std::{io, time::Duration};
+use textwrap;
 
 #[derive(Clone)]
 struct Conversation {
@@ -54,6 +54,7 @@ struct App {
     current_conversation_index: Option<usize>,
     models: Vec<ModelInfo>,
     model_list_state: ListState,
+    show_conversation_list: bool, // New field to control conversation list visibility
 }
 
 impl App {
@@ -69,14 +70,9 @@ impl App {
             current_conversation_index: None,
             models,
             model_list_state: ListState::default(),
+            show_conversation_list: true, // Initialize as visible
         };
-        if !app.conversations.is_empty() {
-            app.conversation_list_state.select(Some(0));
-            app.current_conversation_index = Some(0);
-        }
-        if !app.models.is_empty() {
-            app.model_list_state.select(Some(0));
-        }
+        // ... (rest of the new() function remains the same)
         app
     }
 
@@ -179,6 +175,15 @@ impl App {
         self.conversation_list_state
             .select(Some(self.conversations.len() - 1));
     }
+
+    fn toggle_conversation_list(&mut self) {
+        self.show_conversation_list = !self.show_conversation_list;
+        if !self.show_conversation_list
+            && matches!(self.focused_block, FocusedBlock::ConversationList)
+        {
+            self.next_focus();
+        }
+    }
 }
 
 fn load_models() -> Vec<ModelInfo> {
@@ -230,6 +235,8 @@ fn main() -> Result<(), io::Error> {
                             app.focused_block = FocusedBlock::Input;
                         }
                         KeyCode::Tab => app.next_focus(),
+                        KeyCode::Char('h') => app.toggle_conversation_list(),
+
                         KeyCode::Char('q') => break,
                         _ => {}
                     },
@@ -238,10 +245,14 @@ fn main() -> Result<(), io::Error> {
                         KeyCode::Up => app.previous_model(),
                         KeyCode::Tab => app.next_focus(),
                         KeyCode::Char('q') => break,
+                        KeyCode::Char('h') => app.toggle_conversation_list(),
+
                         _ => {}
                     },
                     FocusedBlock::Chat => match key.code {
                         KeyCode::Tab => app.next_focus(),
+                        KeyCode::Char('h') => app.toggle_conversation_list(),
+
                         KeyCode::Char('q') => break,
                         _ => {}
                     },
@@ -250,6 +261,8 @@ fn main() -> Result<(), io::Error> {
                             KeyCode::Char('i') => app.input_mode = InputMode::Editing,
                             KeyCode::Tab => app.next_focus(),
                             KeyCode::Char('q') => break,
+                            KeyCode::Char('h') => app.toggle_conversation_list(),
+
                             _ => {}
                         },
                         InputMode::Editing => match key.code {
@@ -289,25 +302,41 @@ fn ui(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(3)].as_ref())
-        .split(f.size());
+        .split(f.area());
 
-    let main_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(30), Constraint::Percentage(70)].as_ref())
-        .split(chunks[0]);
+    let main_chunks = if app.show_conversation_list {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(30), Constraint::Percentage(70)].as_ref())
+            .split(chunks[0])
+    } else {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(100)].as_ref())
+            .split(chunks[0])
+    };
 
-    let left_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(3)].as_ref())
-        .split(main_chunks[0]);
+    if app.show_conversation_list {
+        let left_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(0), Constraint::Length(3)].as_ref())
+            .split(main_chunks[0]);
+
+        render_conversation_list(f, app, left_chunks[0]);
+        render_model_select(f, app, left_chunks[1]);
+    }
+
+    let right_area = if app.show_conversation_list {
+        main_chunks[1]
+    } else {
+        main_chunks[0]
+    };
 
     let right_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(3)].as_ref())
-        .split(main_chunks[1]);
+        .split(right_area);
 
-    render_conversation_list(f, app, left_chunks[0]);
-    render_model_select(f, app, left_chunks[1]);
     render_chat(f, app, right_chunks[0]);
     render_input(f, app, right_chunks[1]);
     render_status(f, app, chunks[1]);
@@ -315,12 +344,12 @@ fn ui(f: &mut Frame, app: &mut App) {
 
 fn render_status(f: &mut Frame, app: &App, area: Rect) {
     let status = match app.focused_block {
-        FocusedBlock::ConversationList => "Conversation List | ↑↓: Navigate | Enter: Select | n: New Conversation | Tab: Next Focus",
-        FocusedBlock::ModelSelect => "Model Select | ↑↓: Change Model | Tab: Next Focus",
-        FocusedBlock::Chat => "Chat | PgUp/PgDn: Scroll | Tab: Next Focus",
+        FocusedBlock::ConversationList => "Conversation List | ↑↓: Navigate | Enter: Select | n: New Conversation | Tab: Next Focus | h: Toggle List",
+        FocusedBlock::ModelSelect => "Model Select | ↑↓: Change Model | Tab: Next Focus | h: Toggle List",
+        FocusedBlock::Chat => "Chat | PgUp/PgDn: Scroll | Tab: Next Focus | h: Toggle List",
         FocusedBlock::Input => match app.input_mode {
-            InputMode::Normal => "Input | i: Start Editing | Tab: Next Focus",
-            InputMode::Editing => "Input (Editing) | Enter: Send | Esc: Stop Editing",
+            InputMode::Normal => "Input | i: Start Editing | Tab: Next Focus | h: Toggle List",
+            InputMode::Editing => "Input (Editing) | Enter: Send | Esc: Stop Editing | h: Toggle List",
         },
     };
 
@@ -398,23 +427,47 @@ fn render_chat(f: &mut Frame, app: &App, area: Rect) {
 
     if let Some(index) = app.current_conversation_index {
         let conversation = &app.conversations[index];
+        let messages = conversation.messages.iter().map(|msg| {
+            let role = &msg.role;
+            let content = &msg.content;
+            (role.as_str(), content)
+        });
+
         let mut text = Text::default();
-        for message in &conversation.messages {
-            let style = match message.role.as_str() {
+        let inner_area = area.inner(Margin {
+            vertical: 1,
+            horizontal: 1,
+        });
+        let max_width = inner_area.width as usize;
+
+        for (role, content) in messages {
+            let style = match role {
                 "user" => Style::default().fg(Color::Green),
                 "assistant" => Style::default().fg(Color::Blue),
                 _ => Style::default(),
             };
-            text.extend(Text::styled(
-                format!("{}: {}\n\n", message.role, message.content),
-                style,
-            ));
+
+            let wrapped_content: Vec<String> = textwrap::wrap(content, max_width - 4)
+                .into_iter()
+                .map(|s| s.to_string())
+                .collect();
+
+            for line in wrapped_content {
+                let padded_line = match role {
+                    "assistant" => format!("{:>width$}", line, width = max_width - 4),
+                    _ => line,
+                };
+
+                text.extend(vec![Line::styled(padded_line, style)]);
+            }
+
+            text.extend(vec![Line::from(Span::raw("\n"))]);
         }
-        let paragraph = Paragraph::new(text).wrap(Wrap { trim: true });
-        let inner_area = area.inner(Margin {
-            vertical: 1,
-            horizontal: 1,
-        }); // Removed &
+
+        let paragraph = Paragraph::new(text)
+            .alignment(Alignment::Left) // Overall alignment left; padding adjusts alignment per line
+            .wrap(Wrap { trim: true });
+
         f.render_widget(paragraph, inner_area);
     }
 }
