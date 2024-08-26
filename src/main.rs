@@ -87,8 +87,14 @@ impl App {
         };
         app
     }
+    fn exit_edit_mode(&mut self) {
+        if let InputMode::Editing = self.input_mode {
+            self.input_mode = InputMode::Normal;
+        }
+    }
 
     fn next_focus(&mut self) {
+        self.exit_edit_mode();
         self.focused_block = match self.focused_block {
             FocusedBlock::ConversationList => {
                 if self.show_conversation_list {
@@ -315,7 +321,6 @@ fn main() -> Result<(), io::Error> {
                         }
                         KeyCode::Tab => app.next_focus(),
                         KeyCode::Char('h') => app.toggle_conversation_list(),
-
                         KeyCode::Char('q') => break,
                         _ => {}
                     },
@@ -325,7 +330,6 @@ fn main() -> Result<(), io::Error> {
                         KeyCode::Tab => app.next_focus(),
                         KeyCode::Char('q') => break,
                         KeyCode::Char('h') => app.toggle_conversation_list(),
-
                         _ => {}
                     },
                     FocusedBlock::Chat => match key.code {
@@ -333,7 +337,6 @@ fn main() -> Result<(), io::Error> {
                         KeyCode::Char('h') => app.toggle_conversation_list(),
                         KeyCode::Down => app.next_message(),
                         KeyCode::Up => app.previous_message(),
-
                         KeyCode::Char('q') => break,
                         _ => {}
                     },
@@ -343,7 +346,6 @@ fn main() -> Result<(), io::Error> {
                             KeyCode::Tab => app.next_focus(),
                             KeyCode::Char('q') => break,
                             KeyCode::Char('h') => app.toggle_conversation_list(),
-
                             _ => {}
                         },
                         InputMode::Editing => match key.code {
@@ -357,8 +359,9 @@ fn main() -> Result<(), io::Error> {
                             KeyCode::Backspace => {
                                 app.input.pop();
                             }
-                            KeyCode::Esc => {
+                            KeyCode::Tab => {
                                 app.input_mode = InputMode::Normal;
+                                app.next_focus();
                             }
                             _ => {}
                         },
@@ -514,7 +517,7 @@ fn render_chat(f: &mut Frame, app: &mut App, area: Rect) {
             .messages
             .iter()
             .enumerate()
-            .map(|(msg_index, msg)| {
+            .map(|(_msg_index, msg)| {
                 let (style, prefix) = match msg.role.as_str() {
                     "user" => (Style::default().fg(Color::Green), "You: "),
                     "assistant" => (Style::default().fg(Color::Blue), "AI: "),
@@ -560,7 +563,7 @@ fn render_chat(f: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-fn render_input(f: &mut Frame, app: &App, area: Rect) {
+fn render_input(f: &mut Frame, app: &mut App, area: Rect) {
     let border_style = if matches!(app.focused_block, FocusedBlock::Input) {
         Style::default().fg(Color::Yellow)
     } else {
@@ -583,7 +586,6 @@ fn render_input(f: &mut Frame, app: &App, area: Rect) {
 
     if let FocusedBlock::Input = app.focused_block {
         if let InputMode::Editing = app.input_mode {
-            // Changed set_cursor to set_cursor_position
             f.set_cursor_position(ratatui::layout::Position {
                 x: area.x + app.input.len() as u16 + 1,
                 y: area.y + 1,
