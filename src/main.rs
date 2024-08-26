@@ -309,8 +309,8 @@ fn main() -> Result<(), io::Error> {
             if let Event::Key(key) = event::read()? {
                 match app.focused_block {
                     FocusedBlock::ConversationList => match key.code {
-                        KeyCode::Down => app.next_conversation(),
-                        KeyCode::Up => app.previous_conversation(),
+                        KeyCode::Char('j') | KeyCode::Down => app.next_conversation(),
+                        KeyCode::Char('k') | KeyCode::Up => app.previous_conversation(),
                         KeyCode::Enter => {
                             app.current_conversation_index = app.conversation_list_state.selected();
                             app.focused_block = FocusedBlock::Chat;
@@ -321,22 +321,34 @@ fn main() -> Result<(), io::Error> {
                         }
                         KeyCode::Tab => app.next_focus(),
                         KeyCode::Char('h') => app.toggle_conversation_list(),
+                        KeyCode::Char('i') => {
+                            app.focused_block = FocusedBlock::Input;
+                            app.input_mode = InputMode::Editing;
+                        }
                         KeyCode::Char('q') => break,
                         _ => {}
                     },
                     FocusedBlock::ModelSelect => match key.code {
-                        KeyCode::Down => app.next_model(),
-                        KeyCode::Up => app.previous_model(),
+                        KeyCode::Char('j') | KeyCode::Down => app.next_model(),
+                        KeyCode::Char('k') | KeyCode::Up => app.previous_model(),
                         KeyCode::Tab => app.next_focus(),
-                        KeyCode::Char('q') => break,
                         KeyCode::Char('h') => app.toggle_conversation_list(),
+                        KeyCode::Char('i') => {
+                            app.focused_block = FocusedBlock::Input;
+                            app.input_mode = InputMode::Editing;
+                        }
+                        KeyCode::Char('q') => break,
                         _ => {}
                     },
                     FocusedBlock::Chat => match key.code {
                         KeyCode::Tab => app.next_focus(),
                         KeyCode::Char('h') => app.toggle_conversation_list(),
-                        KeyCode::Down => app.next_message(),
-                        KeyCode::Up => app.previous_message(),
+                        KeyCode::Char('j') | KeyCode::Down => app.next_message(),
+                        KeyCode::Char('k') | KeyCode::Up => app.previous_message(),
+                        KeyCode::Char('i') => {
+                            app.focused_block = FocusedBlock::Input;
+                            app.input_mode = InputMode::Editing;
+                        }
                         KeyCode::Char('q') => break,
                         _ => {}
                     },
@@ -344,8 +356,8 @@ fn main() -> Result<(), io::Error> {
                         InputMode::Normal => match key.code {
                             KeyCode::Char('i') => app.input_mode = InputMode::Editing,
                             KeyCode::Tab => app.next_focus(),
-                            KeyCode::Char('q') => break,
                             KeyCode::Char('h') => app.toggle_conversation_list(),
+                            KeyCode::Char('q') => break,
                             _ => {}
                         },
                         InputMode::Editing => match key.code {
@@ -358,6 +370,9 @@ fn main() -> Result<(), io::Error> {
                             }
                             KeyCode::Backspace => {
                                 app.input.pop();
+                            }
+                            KeyCode::Esc => {
+                                app.input_mode = InputMode::Normal;
                             }
                             KeyCode::Tab => {
                                 app.input_mode = InputMode::Normal;
@@ -428,9 +443,9 @@ fn ui(f: &mut Frame, app: &mut App) {
 
 fn render_status(f: &mut Frame, app: &App, area: Rect) {
     let status = match app.focused_block {
-        FocusedBlock::ConversationList => "Conversation List | ↑↓: Navigate | Enter: Select | n: New Conversation | Tab: Next Focus | h: Toggle List",
-        FocusedBlock::ModelSelect => "Model Select | ↑↓: Change Model | Tab: Next Focus | h: Toggle List",
-        FocusedBlock::Chat => "Chat | PgUp/PgDn: Scroll | Tab: Next Focus | h: Toggle List",
+        FocusedBlock::ConversationList => "Conversation List | j/k or ↑↓: Navigate | Enter: Select | n: New Conversation | i: Edit Input | Tab: Next Focus | h: Toggle List",
+        FocusedBlock::ModelSelect => "Model Select | j/k or ↑↓: Change Model | i: Edit Input | Tab: Next Focus | h: Toggle List",
+        FocusedBlock::Chat => "Chat | j/k or ↑↓: Scroll | i: Edit Input | Tab: Next Focus | h: Toggle List",
         FocusedBlock::Input => match app.input_mode {
             InputMode::Normal => "Input | i: Start Editing | Tab: Next Focus | h: Toggle List",
             InputMode::Editing => "Input (Editing) | Enter: Send | Esc: Stop Editing | h: Toggle List",
