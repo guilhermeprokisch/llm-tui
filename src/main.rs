@@ -1,3 +1,4 @@
+use copypasta::{ClipboardContext, ClipboardProvider};
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
     execute,
@@ -12,8 +13,21 @@ use ratatui::{
     Frame, Terminal,
 };
 use serde_json::Value;
+use std::io;
 use std::process::Command;
-use std::{io, time::Duration};
+use std::time::{Duration, Instant};
+
+// Update the FeedbackMessage struct to include a type
+enum FeedbackType {
+    Positive,
+    Negative,
+}
+
+struct FeedbackMessage {
+    message: String,
+    feedback_type: FeedbackType,
+    expires_at: Instant,
+}
 
 #[derive(Clone)]
 struct Conversation {
@@ -55,6 +69,7 @@ struct App {
     model_list_state: ListState,
     show_conversation_list: bool, // New field to control conversation list visibility
     chat_state: ChatState,
+    feedback: Option<FeedbackMessage>,
 }
 
 struct ChatState {
@@ -84,6 +99,7 @@ impl App {
             model_list_state: ListState::default(),
             show_conversation_list: false,
             chat_state: ChatState::new(),
+            feedback: None,
         };
         app
     }
@@ -269,6 +285,38 @@ impl App {
             self.chat_state.list_state.select(Some(i));
         }
     }
+
+    fn copy_selected_message_to_clipboard(&mut self) -> io::Result<()> {
+        if let Some(conversation_index) = self.current_conversation_index {
+            if let Some(message_index) = self.chat_state.list_state.selected() {
+                let conversation = &self.conversations[conversation_index];
+                if let Some(message) = conversation.messages.get(message_index) {
+                    let mut ctx = ClipboardContext::new()
+                        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                    ctx.set_contents(message.content.clone())
+                        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                    return Ok(());
+                }
+            }
+        }
+        Err(io::Error::new(io::ErrorKind::Other, "No message selected"))
+    }
+
+    fn set_feedback(&mut self, message: String, feedback_type: FeedbackType) {
+        self.feedback = Some(FeedbackMessage {
+            message,
+            feedback_type,
+            expires_at: Instant::now() + Duration::from_secs(2),
+        });
+    }
+
+    fn update_feedback(&mut self) {
+        if let Some(feedback) = &self.feedback {
+            if Instant::now() > feedback.expires_at {
+                self.feedback = None;
+            }
+        }
+    }
 }
 
 fn load_models() -> Vec<ModelInfo> {
@@ -303,6 +351,7 @@ fn main() -> Result<(), io::Error> {
     let mut app = App::new();
 
     loop {
+        app.update_feedback();
         terminal.draw(|f| ui(f, &mut app))?;
 
         if event::poll(Duration::from_millis(100))? {
@@ -349,9 +398,24 @@ fn main() -> Result<(), io::Error> {
                             app.focused_block = FocusedBlock::Input;
                             app.input_mode = InputMode::Editing;
                         }
+                        KeyCode::Char('y') => match app.copy_selected_message_to_clipboard() {
+                            Ok(_) => {
+                                app.set_feedback(
+                                    "Message copied successfully!".to_string(),
+                                    FeedbackType::Positive,
+                                );
+                            }
+                            Err(e) => {
+                                app.set_feedback(
+                                    format!("Failed to copy: {}", e),
+                                    FeedbackType::Negative,
+                                );
+                            }
+                        },
                         KeyCode::Char('q') => break,
-                        _ => {}
+                        _ => {} // This catch-all arm handles all other KeyCode variants
                     },
+
                     FocusedBlock::Input => match app.input_mode {
                         InputMode::Normal => match key.code {
                             KeyCode::Char('i') => app.input_mode = InputMode::Editing,
@@ -439,21 +503,43 @@ fn ui(f: &mut Frame, app: &mut App) {
     render_chat(f, app, right_chunks[0]);
     render_input(f, app, right_chunks[1]);
     render_status(f, app, chunks[1]);
+
+    if let Some(feedback) = &app.feedback {
+        let feedback_color = match feedback.feedback_type {
+            FeedbackType::Positive => Color::Green,
+            FeedbackType::Negative => Color::Red,
+        };
+        let feedback_widget = Paragraph::new(feedback.message.as_str())
+            .style(Style::default().fg(feedback_color))
+            .block(Block::default().borders(Borders::ALL).title("Feedback"));
+        f.render_widget(feedback_widget, chunks[1]);
+    }
 }
 
 fn render_status(f: &mut Frame, app: &App, area: Rect) {
-    let status = match app.focused_block {
-        FocusedBlock::ConversationList => "Conversation List | j/k or ↑↓: Navigate | Enter: Select | n: New Conversation | i: Edit Input | Tab: Next Focus | h: Toggle List",
-        FocusedBlock::ModelSelect => "Model Select | j/k or ↑↓: Change Model | i: Edit Input | Tab: Next Focus | h: Toggle List",
-        FocusedBlock::Chat => "Chat | j/k or ↑↓: Scroll | i: Edit Input | Tab: Next Focus | h: Toggle List",
-        FocusedBlock::Input => match app.input_mode {
-            InputMode::Normal => "Input | i: Start Editing | Tab: Next Focus | h: Toggle List",
-            InputMode::Editing => "Input (Editing) | Enter: Send | Esc: Stop Editing | h: Toggle List",
-        },
+    let status = if let Some(feedback) = &app.feedback {
+        // When feedback is present, show only the feedback message
+        let feedback_color = match feedback.feedback_type {
+            FeedbackType::Positive => Color::Green,
+            FeedbackType::Negative => Color::Red,
+        };
+        Span::styled(&feedback.message, Style::default().fg(feedback_color))
+    } else {
+        // When no feedback is present, show the normal status
+        let status_text = match app.focused_block {
+            FocusedBlock::ConversationList => "Conversation List | j/k or ↑↓: Navigate | Enter: Select | n: New Conversation | i: Edit Input | Tab: Next Focus | h: Toggle List",
+            FocusedBlock::ModelSelect => "Model Select | j/k or ↑↓: Change Model | i: Edit Input | Tab: Next Focus | h: Toggle List",
+            FocusedBlock::Chat => "Chat | j/k or ↑↓: Scroll | y: Copy Message | i: Edit Input | Tab: Next Focus | h: Toggle List",
+            FocusedBlock::Input => match app.input_mode {
+                InputMode::Normal => "Input | i: Start Editing | Tab: Next Focus | h: Toggle List",
+                InputMode::Editing => "Input (Editing) | Enter: Send | Esc: Stop Editing | h: Toggle List",
+            },
+        };
+        Span::styled(status_text, Style::default().fg(Color::Cyan))
     };
 
     let status_widget = Paragraph::new(status)
-        .style(Style::default().fg(Color::Cyan))
+        .style(Style::default())
         .block(Block::default().borders(Borders::ALL));
 
     f.render_widget(status_widget, area);
