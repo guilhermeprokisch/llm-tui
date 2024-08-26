@@ -1,0 +1,9 @@
+[package]
+name = "llm-tui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+crossterm = "0.28.1"
+ratatui = "0.28.1"
+shell-escape = "0.1.5"
