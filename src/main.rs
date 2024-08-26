@@ -1,4 +1,10 @@
 use copypasta::{ClipboardContext, ClipboardProvider};
+use ratatui::widgets::Gauge;
+use std::io::{BufRead, BufReader, Read};
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
     execute,
@@ -14,14 +20,20 @@ use ratatui::{
 };
 use serde_json::Value;
 use std::io;
-use std::process::Command;
+use std::io::Write;
+use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crossbeam_channel::{unbounded, Receiver as CrossbeamReceiver, Sender as CrossbeamSender};
+
+// Modify your AppState enum
+#[derive(Clone, PartialEq)]
 enum AppState {
     Normal,
     Thinking,
+    AwaitingRemoteCommand,
 }
 
 // Update the FeedbackMessage struct to include a type
@@ -77,9 +89,14 @@ struct App {
     show_conversation_list: bool, // New field to control conversation list visibility
     chat_state: ChatState,
     feedback: Option<FeedbackMessage>,
-    state: AppState,
     tx: Sender<String>,
     rx: Receiver<String>,
+    remote_command_rx: CrossbeamReceiver<String>,
+    remote_command_tx: CrossbeamSender<String>,
+    state: AppState,
+    server_running: Arc<AtomicBool>,
+
+    remote_message_received: bool,
 }
 
 struct ChatState {
@@ -97,6 +114,8 @@ impl ChatState {
 impl App {
     fn new() -> Self {
         let (tx, rx) = channel();
+        let (remote_command_tx, remote_command_rx) = unbounded();
+        let server_running = Arc::new(AtomicBool::new(false));
 
         let conversations = load_conversations();
         let models = load_models();
@@ -113,8 +132,12 @@ impl App {
             chat_state: ChatState::new(),
             feedback: None,
             state: AppState::Normal,
+            server_running,
+            remote_message_received: false,
             tx,
             rx,
+            remote_command_rx,
+            remote_command_tx,
         };
         app
     }
@@ -332,11 +355,22 @@ impl App {
         Err(io::Error::new(io::ErrorKind::Other, "No message selected"))
     }
 
+    fn handle_remote_command(&mut self) {
+        if let Ok(input) = self.remote_command_rx.try_recv() {
+            self.input = input;
+            self.send_message();
+            self.set_feedback(
+                "Remote message received and sent!".to_string(),
+                FeedbackType::Positive,
+            );
+        }
+    }
+
     fn set_feedback(&mut self, message: String, feedback_type: FeedbackType) {
         self.feedback = Some(FeedbackMessage {
             message,
             feedback_type,
-            expires_at: Instant::now() + Duration::from_secs(2),
+            expires_at: Instant::now() + Duration::from_secs(5), // Display for 5 seconds
         });
     }
 
@@ -378,15 +412,35 @@ fn main() -> Result<(), io::Error> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = App::new();
+    let app = Arc::new(Mutex::new(App::new()));
+    let app_clone = Arc::clone(&app);
+    let server_running = Arc::clone(&app.lock().unwrap().server_running);
+
+    thread::spawn(move || {
+        let listener = TcpListener::bind("127.0.0.1:8080").unwrap();
+        server_running.store(true, Ordering::SeqCst);
+
+        for stream in listener.incoming() {
+            let stream = stream.unwrap();
+            let tx = app_clone.lock().unwrap().remote_command_tx.clone();
+            thread::spawn(move || {
+                handle_client(stream, tx);
+            });
+        }
+    });
 
     loop {
-        app.update_feedback();
-        app.check_for_response();
-        terminal.draw(|f| ui(f, &mut app))?;
+        {
+            let mut app = app.lock().unwrap();
+            app.update_feedback();
+            app.check_for_response();
+            app.handle_remote_command();
+            terminal.draw(|f| ui(f, &mut *app))?;
+        }
 
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
+                let mut app = app.lock().unwrap();
                 match app.focused_block {
                     FocusedBlock::ConversationList => match key.code {
                         KeyCode::Char('j') | KeyCode::Down => app.next_conversation(),
@@ -444,9 +498,8 @@ fn main() -> Result<(), io::Error> {
                             }
                         },
                         KeyCode::Char('q') => break,
-                        _ => {} // This catch-all arm handles all other KeyCode variants
+                        _ => {}
                     },
-
                     FocusedBlock::Input => match app.input_mode {
                         InputMode::Normal => match key.code {
                             KeyCode::Char('i') => app.input_mode = InputMode::Editing,
@@ -548,6 +601,11 @@ fn ui(f: &mut Frame, app: &mut App) {
 }
 
 fn render_status(f: &mut Frame, app: &App, area: Rect) {
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(80), Constraint::Percentage(20)].as_ref())
+        .split(area);
+
     let status = if let Some(feedback) = &app.feedback {
         // When feedback is present, show only the feedback message
         let feedback_color = match feedback.feedback_type {
@@ -573,9 +631,28 @@ fn render_status(f: &mut Frame, app: &App, area: Rect) {
 
     let status_widget = Paragraph::new(status)
         .style(Style::default())
-        .block(Block::default().borders(Borders::ALL));
+        .block(Block::default().borders(Borders::ALL).title("Status"));
 
-    f.render_widget(status_widget, area);
+    f.render_widget(status_widget, chunks[0]);
+
+    // Render server status gauge
+    let server_status = if app.server_running.load(Ordering::SeqCst) {
+        "Server Running"
+    } else {
+        "Server Stopped"
+    };
+
+    let gauge = Gauge::default()
+        .block(Block::default().title("Server").borders(Borders::ALL))
+        .gauge_style(Style::default().fg(Color::Green))
+        .ratio(if app.server_running.load(Ordering::SeqCst) {
+            1.0
+        } else {
+            0.0
+        })
+        .label(server_status);
+
+    f.render_widget(gauge, chunks[1]);
 }
 
 fn render_conversation_list(f: &mut Frame, app: &App, area: Rect) {
@@ -800,10 +877,53 @@ fn load_conversations() -> Vec<Conversation> {
 }
 
 fn run_llm(prompt: &str, model_alias: &str) -> String {
-    let output = Command::new("llm")
-        .args(["-m", model_alias, prompt])
-        .output()
-        .expect("Failed to execute llm command");
+    let mut command = Command::new("llm");
+    command.args(["-m", model_alias, prompt]);
+    command.stdout(Stdio::piped());
+    command.stderr(Stdio::piped());
 
-    String::from_utf8_lossy(&output.stdout).to_string()
+    let mut child = command.spawn().expect("Failed to execute llm command");
+
+    let mut output = String::new();
+    let mut error = String::new();
+
+    // Read stdout
+    if let Some(stdout) = child.stdout.take() {
+        let mut stdout_reader = BufReader::new(stdout);
+        stdout_reader
+            .read_to_string(&mut output)
+            .expect("Failed to read stdout");
+    }
+
+    // Read stderr
+    if let Some(stderr) = child.stderr.take() {
+        let mut stderr_reader = BufReader::new(stderr);
+        stderr_reader
+            .read_to_string(&mut error)
+            .expect("Failed to read stderr");
+    }
+
+    // Wait for the command to finish
+    let status = child.wait().expect("Failed to wait for llm command");
+
+    if !status.success() {
+        // If the command failed, append the error to the output
+        output.push_str("\nError: ");
+        output.push_str(&error);
+    }
+
+    output
+}
+
+fn handle_client(mut stream: TcpStream, tx: CrossbeamSender<String>) {
+    let mut reader = BufReader::new(&stream);
+    let mut command_output = String::new();
+
+    reader.read_line(&mut command_output).unwrap();
+
+    tx.send(command_output.trim().to_string()).unwrap();
+
+    stream
+        .write_all(b"Command received and processed.\n")
+        .unwrap();
 }

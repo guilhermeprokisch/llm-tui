@@ -2,13 +2,28 @@
 name = "llm-tui"
 version = "0.1.0"
 edition = "2021"
+authors = ["Guilherme Prokisch"]
+description = "A Terminal User Interface (TUI) for interacting with Language Learning Models (LLM) using llm-cli"
+repository = "https://github.com/guilhermeprokisch/llm-tui"
+license = "MIT"
+readme = "README.md"
+keywords = ["llm", "tui", "cli", "ai", "chatbot"]
+categories = ["command-line-utilities", "text-processing"]
 
 [dependencies]
 copypasta = "0.10.1"
+crossbeam-channel = "0.5.13"
 crossterm = "0.28.1"
 ratatui = "0.28.1"
-serde = "1.0.209"
+serde = { version = "1.0.209", features = ["derive"] }
 serde_json = "1.0.127"
 shell-escape = "0.1.5"
 textwrap = "0.16.1"
 unicode-width = "0.1.13"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = 'abort'
+strip = true
