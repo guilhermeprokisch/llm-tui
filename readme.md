@@ -1,6 +1,7 @@
 # llm-tui
 
 A Terminal User Interface (TUI) for interacting with Language Learning Models (LLM) directly from your command line written in Rust.
+
 Because sometimes, you need your AI to be as blazingly fast and memory safe as your conversations are awkward. 🦀
 
 ## Preview
