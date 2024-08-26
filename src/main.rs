@@ -5,16 +5,15 @@ use crossterm::{
 };
 use ratatui::{
     backend::CrosstermBackend,
-    layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::{Line, Span, Text},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
+    text::{Line, Span},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
     Frame, Terminal,
 };
 use serde_json::Value;
 use std::process::Command;
 use std::{io, time::Duration};
-use textwrap;
 
 #[derive(Clone)]
 struct Conversation {
@@ -55,13 +54,26 @@ struct App {
     models: Vec<ModelInfo>,
     model_list_state: ListState,
     show_conversation_list: bool, // New field to control conversation list visibility
+    chat_state: ChatState,
+}
+
+struct ChatState {
+    list_state: ListState,
+}
+
+impl ChatState {
+    fn new() -> Self {
+        Self {
+            list_state: ListState::default(),
+        }
+    }
 }
 
 impl App {
     fn new() -> Self {
         let conversations = load_conversations();
         let models = load_models();
-        let mut app = App {
+        let app = App {
             input: String::new(),
             input_mode: InputMode::Normal,
             focused_block: FocusedBlock::ConversationList,
@@ -70,18 +82,36 @@ impl App {
             current_conversation_index: None,
             models,
             model_list_state: ListState::default(),
-            show_conversation_list: true, // Initialize as visible
+            show_conversation_list: false,
+            chat_state: ChatState::new(),
         };
-        // ... (rest of the new() function remains the same)
         app
     }
 
     fn next_focus(&mut self) {
         self.focused_block = match self.focused_block {
-            FocusedBlock::ConversationList => FocusedBlock::ModelSelect,
-            FocusedBlock::ModelSelect => FocusedBlock::Chat,
+            FocusedBlock::ConversationList => {
+                if self.show_conversation_list {
+                    FocusedBlock::ModelSelect
+                } else {
+                    FocusedBlock::Chat
+                }
+            }
+            FocusedBlock::ModelSelect => {
+                if self.show_conversation_list {
+                    FocusedBlock::Chat
+                } else {
+                    FocusedBlock::Input
+                }
+            }
             FocusedBlock::Chat => FocusedBlock::Input,
-            FocusedBlock::Input => FocusedBlock::ConversationList,
+            FocusedBlock::Input => {
+                if self.show_conversation_list {
+                    FocusedBlock::ConversationList
+                } else {
+                    FocusedBlock::Chat
+                }
+            }
         };
     }
 
@@ -160,6 +190,18 @@ impl App {
             });
 
             self.input.clear();
+
+            // Auto-scroll to the bottom after sending a message
+            self.scroll_to_bottom();
+        }
+    }
+
+    fn scroll_to_bottom(&mut self) {
+        if let Some(index) = self.current_conversation_index {
+            let message_count = self.conversations[index].messages.len();
+            if message_count > 0 {
+                self.chat_state.list_state.select(Some(message_count - 1));
+            }
         }
     }
 
@@ -182,6 +224,43 @@ impl App {
             && matches!(self.focused_block, FocusedBlock::ConversationList)
         {
             self.next_focus();
+        }
+    }
+    fn selected_message(&self) -> Option<usize> {
+        self.chat_state.list_state.selected()
+    }
+
+    fn next_message(&mut self) {
+        if let Some(index) = self.current_conversation_index {
+            let messages = &self.conversations[index].messages;
+            let i = match self.chat_state.list_state.selected() {
+                Some(i) => {
+                    if i >= messages.len() - 1 {
+                        0
+                    } else {
+                        i + 1
+                    }
+                }
+                None => 0,
+            };
+            self.chat_state.list_state.select(Some(i));
+        }
+    }
+
+    fn previous_message(&mut self) {
+        if let Some(index) = self.current_conversation_index {
+            let messages = &self.conversations[index].messages;
+            let i = match self.chat_state.list_state.selected() {
+                Some(i) => {
+                    if i == 0 {
+                        messages.len() - 1
+                    } else {
+                        i - 1
+                    }
+                }
+                None => 0,
+            };
+            self.chat_state.list_state.select(Some(i));
         }
     }
 }
@@ -252,6 +331,8 @@ fn main() -> Result<(), io::Error> {
                     FocusedBlock::Chat => match key.code {
                         KeyCode::Tab => app.next_focus(),
                         KeyCode::Char('h') => app.toggle_conversation_list(),
+                        KeyCode::Down => app.next_message(),
+                        KeyCode::Up => app.previous_message(),
 
                         KeyCode::Char('q') => break,
                         _ => {}
@@ -412,7 +493,7 @@ fn render_model_select(f: &mut Frame, app: &App, area: Rect) {
     f.render_stateful_widget(list, area, &mut app.model_list_state.clone());
 }
 
-fn render_chat(f: &mut Frame, app: &App, area: Rect) {
+fn render_chat(f: &mut Frame, app: &mut App, area: Rect) {
     let border_style = if matches!(app.focused_block, FocusedBlock::Chat) {
         Style::default().fg(Color::Yellow)
     } else {
@@ -423,52 +504,59 @@ fn render_chat(f: &mut Frame, app: &App, area: Rect) {
         .title("Chat")
         .borders(Borders::ALL)
         .border_style(border_style);
+
+    let inner_area = block.inner(area);
     f.render_widget(block, area);
 
     if let Some(index) = app.current_conversation_index {
         let conversation = &app.conversations[index];
-        let messages = conversation.messages.iter().map(|msg| {
-            let role = &msg.role;
-            let content = &msg.content;
-            (role.as_str(), content)
-        });
-
-        let mut text = Text::default();
-        let inner_area = area.inner(Margin {
-            vertical: 1,
-            horizontal: 1,
-        });
-        let max_width = inner_area.width as usize;
-
-        for (role, content) in messages {
-            let style = match role {
-                "user" => Style::default().fg(Color::Green),
-                "assistant" => Style::default().fg(Color::Blue),
-                _ => Style::default(),
-            };
-
-            let wrapped_content: Vec<String> = textwrap::wrap(content, max_width - 4)
-                .into_iter()
-                .map(|s| s.to_string())
-                .collect();
-
-            for line in wrapped_content {
-                let padded_line = match role {
-                    "assistant" => format!("{:>width$}", line, width = max_width - 4),
-                    _ => line,
+        let messages: Vec<ListItem> = conversation
+            .messages
+            .iter()
+            .enumerate()
+            .map(|(msg_index, msg)| {
+                let (style, prefix) = match msg.role.as_str() {
+                    "user" => (Style::default().fg(Color::Green), "You: "),
+                    "assistant" => (Style::default().fg(Color::Blue), "AI: "),
+                    _ => (Style::default(), ""),
                 };
 
-                text.extend(vec![Line::styled(padded_line, style)]);
+                let content = format!("{}{}", prefix, msg.content);
+                let wrapped_content = textwrap::wrap(&content, inner_area.width as usize - 2);
+                let lines: Vec<Line> = wrapped_content
+                    .into_iter()
+                    .map(|line| Line::from(vec![Span::styled(line.to_string(), style)]))
+                    .collect();
+
+                ListItem::new(lines).style(style)
+            })
+            .collect();
+
+        let total_messages = messages.len();
+        let visible_messages = inner_area.height as usize;
+
+        let start_index = if let Some(selected) = app.selected_message() {
+            selected.saturating_sub(visible_messages / 2)
+        } else {
+            total_messages.saturating_sub(visible_messages)
+        };
+
+        let end_index = (start_index + visible_messages).min(total_messages);
+        let visible_messages = messages[start_index..end_index].to_vec();
+
+        let messages_list = List::new(visible_messages)
+            .block(Block::default())
+            .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+            .highlight_symbol("> ");
+
+        f.render_stateful_widget(messages_list, inner_area, &mut app.chat_state.list_state);
+
+        // Update the selected index if it's out of bounds
+        if let Some(selected) = app.chat_state.list_state.selected() {
+            if selected >= total_messages {
+                app.chat_state.list_state.select(Some(total_messages - 1));
             }
-
-            text.extend(vec![Line::from(Span::raw("\n"))]);
         }
-
-        let paragraph = Paragraph::new(text)
-            .alignment(Alignment::Left) // Overall alignment left; padding adjusts alignment per line
-            .wrap(Wrap { trim: true });
-
-        f.render_widget(paragraph, inner_area);
     }
 }
 

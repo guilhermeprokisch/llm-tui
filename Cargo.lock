@@ -177,6 +177,7 @@ dependencies = [
  "serde_json",
  "shell-escape",
  "textwrap",
+ "unicode-width",
 ]
 
 [[package]]
